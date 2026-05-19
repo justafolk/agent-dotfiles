@@ -1,4 +1,4 @@
-# Codex Dotfiles
+# Agent Dotfiles
 
 Tmux, Bash, and Vim setup for terminal-first AI coding with Codex, Claude Code, or OpenCode.
 
