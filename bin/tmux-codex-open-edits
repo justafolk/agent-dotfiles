@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+session="${1:-}"
+mode="${2:-once}"
+if [[ -z "$session" ]]; then
+  session="$(tmux display-message -p '#S')"
+fi
+
+state_dir="${TMPDIR:-/tmp}/tmux-codex-open-edits"
+mkdir -p "$state_dir"
+state_file="$state_dir/${session}.seen"
+touch "$state_file"
+
+watch_root() {
+  local configured main_pane cwd
+
+  configured="$(tmux show-option -qv -t "$session" @codex_watch_root 2>/dev/null || true)"
+  if [[ -n "$configured" ]]; then
+    printf "%s" "${configured/#\~/$HOME}"
+    return 0
+  fi
+
+  main_pane="$(tmux show-option -qv -t "$session" @codex_main_pane 2>/dev/null || true)"
+  [[ -n "$main_pane" ]] || return 1
+  tmux list-panes -a -F '#{pane_id}' | grep -qx "$main_pane" || return 1
+
+  cwd="$(tmux display-message -p -t "$main_pane" '#{pane_current_path}' 2>/dev/null || pwd)"
+  git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || printf "%s" "$cwd"
+}
+
+vim_escape() {
+  local value="$1"
+  value="${value//\'/\'\'}"
+  printf "%s" "$value"
+}
+
+open_file_in_vim_pane() {
+  local file="$1"
+  local vim_pane command escaped
+
+  vim_pane="$(tmux show-option -qv -t "$session" @codex_vim_pane 2>/dev/null || true)"
+  [[ -n "$vim_pane" ]] || return 0
+  tmux list-panes -a -F '#{pane_id}' | grep -qx "$vim_pane" || return 0
+
+  command="$(tmux display-message -p -t "$vim_pane" '#{pane_current_command}' 2>/dev/null || true)"
+  case "$command" in
+    vim|view|nvim) ;;
+    *) return 0 ;;
+  esac
+
+  escaped="$(vim_escape "$file")"
+  tmux send-keys -t "$vim_pane" Escape
+  tmux send-keys -t "$vim_pane" -l ":execute 'tab drop ' . fnameescape('$escaped') | silent! checktime | GitGutter"
+  tmux send-keys -t "$vim_pane" C-m
+}
+
+scan_once() {
+  local open_changed="${1:-open}"
+  local root file abs mtime key max_depth
+
+  root="$(watch_root)" || return 0
+  [[ -d "$root" ]] || return 0
+
+  while IFS= read -r -d '' file; do
+    if [[ "$file" = /* ]]; then
+      abs="$file"
+    else
+      abs="$root/$file"
+    fi
+    case "$(basename "$abs")" in
+      .*.sw[a-p]|*.sw[a-p]|*~) continue ;;
+    esac
+    [[ -f "$abs" ]] || continue
+    mtime="$(stat -c '%Y' "$abs" 2>/dev/null || true)"
+    [[ -n "$mtime" ]] || continue
+    key="$abs:$mtime"
+    if ! grep -Fxq "$key" "$state_file"; then
+      printf "%s\n" "$key" >> "$state_file"
+      if [[ "$open_changed" == "open" ]]; then
+        open_file_in_vim_pane "$abs"
+      fi
+    fi
+  done < <(
+    if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      git -C "$root" ls-files -m -o --exclude-standard -z 2>/dev/null || true
+    else
+      max_depth="$(tmux show-option -gqv @codex_watch_max_depth 2>/dev/null || printf "6")"
+      find "$root" \
+        -maxdepth "$max_depth" \
+        \( -path '*/.git' -o -path '*/.codex' -o -path '*/.cache' -o -path '*/node_modules' -o -path '*/.next' -o -path '*/dist' -o -path '*/build' \) -prune \
+        -o -type f -mmin -30 -print0 2>/dev/null || true
+    fi
+  )
+}
+
+if [[ "$mode" == "watch" ]]; then
+  interval="$(tmux show-option -gqv @codex_watch_interval 2>/dev/null || printf "2")"
+  scan_once baseline
+  while tmux has-session -t "$session" 2>/dev/null; do
+    scan_once
+    sleep "$interval"
+  done
+else
+  scan_once
+fi
