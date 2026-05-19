@@ -16,6 +16,7 @@ Tmux, Bash, and Vim setup for terminal-first AI coding with Codex, Claude Code, 
   - `Space` cycles panes
 - Watches files edited under the agent pane path and opens/reloads them in Vim tabs.
 - Uses `vim-gitgutter` for Git diff signs and hunk navigation.
+- Creates fast per-task Git worktrees for Codex, Claude Code, or OpenCode sessions.
 
 ## Keybindings
 
@@ -70,7 +71,28 @@ This repo assumes `vim-plug`, `tmux`, `vim`, `git`, and `bash`.
 - `modules/bash/codex-tmux.bash`: Bash vi-mode tmux integration.
 - `bin/tmux-codex-layout`: tmux workspace layout helper.
 - `bin/tmux-codex-open-edits`: file watcher that opens changed files in Vim tabs.
+- `bin/ai-worktree-create`: per-task worktree creator with tmux window support.
 - `home/`: exact copies of the files from the original machine.
+
+## Agent Worktrees
+
+Write task items in `~/todo.md`, then ask your agent to follow `AGENTS.md`.
+The agent should group related items when it is cheaper to solve them together
+and create one titled tmux window per worktree:
+
+```bash
+ai-worktree-create \
+  --repo . \
+  --todo "$HOME/todo.md" \
+  --task "fix auth redirect and add regression test" \
+  --command "opencode $HOME/todo.md"
+```
+
+The script creates `../<repo>-worktrees/<task>-<timestamp>`, starts a new
+`agent/<task>-<timestamp>` branch, and symlinks local untracked plus ignored
+files from the source worktree. This keeps expensive local state such as
+`.env`, dependency folders, caches, and generated assets available without
+copying them into every worktree.
 
 ## Notes
 

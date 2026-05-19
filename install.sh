@@ -13,6 +13,7 @@ backup_file() {
 install -d "$HOME/.local/bin"
 install -m 0755 "$repo_dir/bin/tmux-codex-layout" "$HOME/.local/bin/tmux-codex-layout"
 install -m 0755 "$repo_dir/bin/tmux-codex-open-edits" "$HOME/.local/bin/tmux-codex-open-edits"
+install -m 0755 "$repo_dir/bin/ai-worktree-create" "$HOME/.local/bin/ai-worktree-create"
 
 backup_file "$HOME/.tmux.conf"
 backup_file "$HOME/.vimrc"
@@ -34,5 +35,5 @@ if [[ -f "$HOME/.bashrc" ]] && ! grep -q 'codex tmux/bash flow' "$HOME/.bashrc";
   printf "%s\n" "$bash_snippet" >> "$HOME/.bashrc"
 fi
 
-printf "Installed tmux, Vim, Bash, and helper script config.\n"
+printf "Installed tmux, Vim, Bash, worktree, and helper script config.\n"
 printf "Restart your shell, then run: tmux\n"

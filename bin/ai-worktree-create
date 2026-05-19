@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: ai-worktree-create --task TEXT [options]
+
+Create a fast Git worktree for one agent task, symlink untracked/ignored local
+files into it, and optionally open a titled tmux window in the new worktree.
+
+Options:
+  --task TEXT        Task or grouped task description. Required unless --name is set.
+  --name TEXT        Short display name used for branch, directory, and tmux title.
+  --repo PATH        Source repository path. Defaults to the current directory.
+  --base REF         Base ref for the new branch. Defaults to HEAD.
+  --dir PATH         Parent directory for worktrees. Defaults to ../<repo>-worktrees.
+  --todo PATH        Todo file path exposed to the agent as AI_TODO_FILE.
+  --command TEXT     Shell command to run in the tmux window, e.g. "opencode ~/todo.md".
+  --tmux            Always create a tmux window.
+  --no-tmux         Do not create a tmux window.
+  --no-sync         Do not symlink untracked/ignored files.
+  --print-path      Print only the worktree path at the end.
+  -h, --help        Show this help.
+USAGE
+}
+
+die() {
+  printf "ai-worktree-create: %s\n" "$*" >&2
+  exit 1
+}
+
+slugify() {
+  local value="$1"
+  value="$(printf "%s" "$value" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g' \
+    | cut -c 1-48)"
+  printf "%s" "${value:-task}"
+}
+
+shell_quote() {
+  local value="$1"
+  printf "'%s'" "${value//\'/\'\\\'\'}"
+}
+
+repo="."
+base_ref="HEAD"
+task=""
+name=""
+worktree_parent=""
+todo_file=""
+window_command=""
+tmux_mode="auto"
+sync_local=1
+print_path=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --task)
+      [[ $# -ge 2 ]] || die "--task requires a value"
+      task="$2"
+      shift 2
+      ;;
+    --name)
+      [[ $# -ge 2 ]] || die "--name requires a value"
+      name="$2"
+      shift 2
+      ;;
+    --repo)
+      [[ $# -ge 2 ]] || die "--repo requires a value"
+      repo="$2"
+      shift 2
+      ;;
+    --base)
+      [[ $# -ge 2 ]] || die "--base requires a value"
+      base_ref="$2"
+      shift 2
+      ;;
+    --dir)
+      [[ $# -ge 2 ]] || die "--dir requires a value"
+      worktree_parent="$2"
+      shift 2
+      ;;
+    --todo)
+      [[ $# -ge 2 ]] || die "--todo requires a value"
+      todo_file="$2"
+      shift 2
+      ;;
+    --command)
+      [[ $# -ge 2 ]] || die "--command requires a value"
+      window_command="$2"
+      shift 2
+      ;;
+    --tmux)
+      tmux_mode="always"
+      shift
+      ;;
+    --no-tmux)
+      tmux_mode="never"
+      shift
+      ;;
+    --no-sync)
+      sync_local=0
+      shift
+      ;;
+    --print-path)
+      print_path=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown option: $1"
+      ;;
+  esac
+done
+
+[[ -n "$task" || -n "$name" ]] || die "--task or --name is required"
+display_name="${name:-$task}"
+slug="$(slugify "$display_name")"
+
+source_root="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" \
+  || die "$repo is not inside a Git worktree"
+repo_name="$(basename "$source_root")"
+source_parent="$(dirname "$source_root")"
+
+if [[ -z "$worktree_parent" ]]; then
+  worktree_parent="$source_parent/${repo_name}-worktrees"
+fi
+
+timestamp="$(date +%Y%m%d%H%M%S)"
+branch="agent/${slug}-${timestamp}"
+worktree_path="$worktree_parent/$slug-$timestamp"
+
+mkdir -p "$worktree_parent"
+git -C "$source_root" worktree add -b "$branch" "$worktree_path" "$base_ref" >/dev/null
+
+if [[ "$sync_local" == "1" ]]; then
+  declare -A seen_paths=()
+  while IFS= read -r -d '' local_path; do
+    [[ -n "$local_path" ]] || continue
+    local_path="${local_path%/}"
+    case "$local_path" in
+      .git|.git/*|"") continue ;;
+    esac
+    [[ -z "${seen_paths[$local_path]+x}" ]] || continue
+    seen_paths["$local_path"]=1
+
+    source_path="$source_root/$local_path"
+    target_path="$worktree_path/$local_path"
+    [[ -e "$source_path" || -L "$source_path" ]] || continue
+    [[ ! -e "$target_path" && ! -L "$target_path" ]] || continue
+
+    mkdir -p "$(dirname "$target_path")"
+    ln -s "$source_path" "$target_path"
+  done < <(
+    git -C "$source_root" ls-files --others --exclude-standard --directory -z
+    git -C "$source_root" ls-files --others --ignored --exclude-standard --directory -z
+  )
+fi
+
+should_open_tmux=0
+if [[ "$tmux_mode" == "always" ]]; then
+  should_open_tmux=1
+elif [[ "$tmux_mode" == "auto" && -n "${TMUX:-}" ]]; then
+  should_open_tmux=1
+fi
+
+if [[ "$should_open_tmux" == "1" ]]; then
+  command -v tmux >/dev/null 2>&1 || die "tmux is not available"
+  window_title="wt:${slug}"
+  window_title="$(printf "%s" "$window_title" | cut -c 1-32)"
+
+  if [[ -n "$window_command" ]]; then
+    env_prefix="AI_WORKTREE_PATH=$(shell_quote "$worktree_path") AI_WORKTREE_TASK=$(shell_quote "${task:-$name}")"
+    if [[ -n "$todo_file" ]]; then
+      env_prefix="$env_prefix AI_TODO_FILE=$(shell_quote "$todo_file")"
+    fi
+    tmux new-window -n "$window_title" -c "$worktree_path" "$env_prefix $window_command"
+  else
+    tmux new-window -n "$window_title" -c "$worktree_path"
+  fi
+fi
+
+if [[ "$print_path" == "1" ]]; then
+  printf "%s\n" "$worktree_path"
+else
+  printf "Created %s on branch %s\n" "$worktree_path" "$branch"
+fi
