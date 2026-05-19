@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_path="${1:-$(pwd)}"
+refresh_interval="${AI_PR_DASHBOARD_INTERVAL:-30}"
+
+if [[ ! -d "$repo_path/.git" ]]; then
+  repo_path="$(git -C "$repo_path" rev-parse --show-toplevel 2>/dev/null || pwd)"
+fi
+
+repo_root="$(git -C "$repo_path" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$repo_path")"
+repo_name="$(basename "$repo_root")"
+
+color() {
+  local code="$1"
+  shift
+  printf '\033[%sm%s\033[0m' "$code" "$*"
+}
+
+line() {
+  printf '%*s\n' "${COLUMNS:-100}" '' | tr ' ' '-'
+}
+
+header() {
+  if [[ -n "${TERM:-}" ]]; then
+    clear 2>/dev/null || printf '\033[H\033[2J'
+  else
+    printf '\033[H\033[2J'
+  fi
+  color "1;36" "Agent PR Dashboard"
+  printf "  "
+  color "2" "$repo_name"
+  printf "\n"
+  line
+  printf "Repo: %s\n" "$repo_root"
+  printf "Updated: %s  Refresh: %ss  Quit: Ctrl-c\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$refresh_interval"
+  line
+}
+
+require_tools() {
+  local missing=()
+  command -v git >/dev/null 2>&1 || missing+=("git")
+  command -v gh >/dev/null 2>&1 || missing+=("gh")
+  command -v jq >/dev/null 2>&1 || missing+=("jq")
+
+  if ((${#missing[@]} > 0)); then
+    header
+    color "1;31" "Missing required tools: ${missing[*]}"
+    printf "\n"
+    sleep "$refresh_interval"
+    return 1
+  fi
+
+  return 0
+}
+
+branch_worktrees_json() {
+  git -C "$repo_root" worktree list --porcelain |
+    awk '
+      /^worktree / { path=substr($0, 10); branch="" }
+      /^branch / {
+        branch=substr($0, 8)
+        sub("^refs/heads/", "", branch)
+      }
+      /^$/ {
+        if (path != "" && branch != "") {
+          printf "%s\t%s\n", branch, path
+        }
+        path=""; branch=""
+      }
+      END {
+        if (path != "" && branch != "") {
+          printf "%s\t%s\n", branch, path
+        }
+      }
+    ' |
+    jq -R -s '
+      split("\n")
+      | map(select(length > 0) | split("\t") | {branch: .[0], path: .[1]})
+    '
+}
+
+render_pr() {
+  local pr="$1"
+  local branch="$2"
+  local path="$3"
+  local title number url state author updated additions deletions comments commits checks mergeable
+
+  title="$(jq -r '.title // "Untitled PR"' <<<"$pr")"
+  number="$(jq -r '.number // "?"' <<<"$pr")"
+  url="$(jq -r '.url // ""' <<<"$pr")"
+  state="$(jq -r '.state // "UNKNOWN"' <<<"$pr")"
+  author="$(jq -r '.author.login // "unknown"' <<<"$pr")"
+  updated="$(jq -r '.updatedAt // ""' <<<"$pr")"
+  additions="$(jq -r '.additions // 0' <<<"$pr")"
+  deletions="$(jq -r '.deletions // 0' <<<"$pr")"
+  comments="$(jq -r '(.comments | length) + (.reviews | length)' <<<"$pr")"
+  commits="$(jq -r '.commits.totalCount // 0' <<<"$pr")"
+  checks="$(jq -r '.statusCheckRollup[0].state // "UNKNOWN"' <<<"$pr")"
+  mergeable="$(jq -r '.mergeable // "UNKNOWN"' <<<"$pr")"
+
+  color "1;37" "#$number $title"
+  printf "  "
+  color "1;32" "$state"
+  printf "\n"
+  printf "  Branch: %s\n" "$branch"
+  printf "  Worktree: %s\n" "$path"
+  printf "  Author: %s  Updated: %s  Mergeable: %s\n" "$author" "$updated" "$mergeable"
+  printf "  Stats: +%s -%s  Commits: %s  Comments/Reviews: %s  Checks: %s\n" \
+    "$additions" "$deletions" "$commits" "$comments" "$checks"
+  printf "  %s\n" "$url"
+
+  jq -r '
+    [
+      (.comments[]? | {kind: "comment", author: .author.login, at: .createdAt, body: .body}),
+      (.reviews[]? | {kind: "review", author: .author.login, at: .submittedAt, body: (.body // .state)})
+    ]
+    | sort_by(.at)
+    | reverse
+    | .[0:3]
+    | .[]
+    | "  - " + .kind + " by " + (.author // "unknown") + " at " + (.at // "") + "\n    " + ((.body // "") | gsub("[\r\n]+"; " ") | .[0:140])
+  ' <<<"$pr"
+  printf "\n"
+}
+
+render() {
+  header
+
+  local worktrees prs branch path pr matched any_pr
+  worktrees="$(branch_worktrees_json)"
+  if ! prs="$(
+    cd "$repo_root" &&
+      gh pr list --state all --limit 100 \
+        --json number,title,url,state,headRefName,author,updatedAt,additions,deletions,comments,reviews,commits,statusCheckRollup,mergeable 2>&1
+  )"; then
+    color "1;31" "gh pr list failed"
+    printf "\n%s\n" "$prs"
+    return
+  fi
+
+  if [[ -z "$prs" || "$prs" == "[]" ]]; then
+    color "2" "No GitHub PRs found for this repository."
+    printf "\n"
+    return
+  fi
+
+  any_pr=0
+  while IFS=$'\t' read -r branch path; do
+    [[ -n "$branch" ]] || continue
+    pr="$(jq -c --arg branch "$branch" '.[] | select(.headRefName == $branch)' <<<"$prs" | head -n 1)"
+    [[ -n "$pr" ]] || continue
+    any_pr=1
+    render_pr "$pr" "$branch" "$path"
+  done < <(jq -r '.[] | [.branch, .path] | @tsv' <<<"$worktrees")
+
+  matched="$(
+    jq -r --argjson worktrees "$worktrees" '
+      .[]
+      | select(.headRefName as $branch | ($worktrees | map(.branch) | index($branch)) | not)
+      | @base64
+    ' <<<"$prs"
+  )"
+
+  if [[ -n "$matched" ]]; then
+    color "1;34" "Other repository PRs"
+    printf "\n"
+    while IFS= read -r encoded; do
+      [[ -n "$encoded" ]] || continue
+      pr="$(printf '%s' "$encoded" | base64 -d)"
+      any_pr=1
+      render_pr "$pr" "$(jq -r '.headRefName' <<<"$pr")" "-"
+    done <<<"$matched"
+  fi
+
+  if [[ "$any_pr" == "0" ]]; then
+    color "2" "No PRs match the current worktree branches yet."
+    printf "\n"
+  fi
+}
+
+while true; do
+  if require_tools; then
+    render
+  fi
+  sleep "$refresh_interval"
+done

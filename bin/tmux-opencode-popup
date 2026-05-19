@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+session="${1:-}"
+fallback_dir="${2:-}"
+
+if [[ -z "$session" ]]; then
+  session="$(tmux display-message -p '#S')"
+fi
+
+if [[ -z "$fallback_dir" ]]; then
+  fallback_dir="$(tmux display-message -p '#{pane_current_path}')"
+fi
+
+target_pane="$(tmux show-option -qv -t "$session" @codex_main_pane 2>/dev/null || true)"
+work_dir="$fallback_dir"
+
+if [[ -n "$target_pane" ]] && tmux display-message -p -t "$target_pane" '#{pane_id}' >/dev/null 2>&1; then
+  work_dir="$(tmux display-message -p -t "$target_pane" '#{pane_current_path}' 2>/dev/null || printf '%s' "$fallback_dir")"
+fi
+
+if ! command -v opencode >/dev/null 2>&1; then
+  tmux display-message "opencode is not available on PATH"
+  exit 1
+fi
+
+tmux display-popup \
+  -T "OpenCode quick question" \
+  -d "$work_dir" \
+  -w 88% \
+  -h 82% \
+  -E "opencode"

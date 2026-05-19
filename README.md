@@ -28,6 +28,8 @@ Tmux:
 - `C-w h/j/k/l`: move between panes
 - `C-w l`: cycle panes
 - `C-w C`: start `codex` in the main pane
+- `C-w Q`: open a floating OpenCode terminal in the coding agent directory
+- `C-w P`: open the shared floating PR dashboard
 - `C-w D`: apply the three-pane layout manually
 - `C-w O`: scan changed files and open them in Vim
 - `C-w C-w`: send literal `Ctrl-w`
@@ -72,6 +74,9 @@ This repo assumes `vim-plug`, `tmux`, `vim`, `git`, and `bash`.
 - `bin/tmux-codex-layout`: tmux workspace layout helper.
 - `bin/tmux-codex-open-edits`: file watcher that opens changed files in Vim tabs.
 - `bin/ai-worktree-create`: per-task worktree creator with tmux window support.
+- `bin/tmux-opencode-popup`: floating OpenCode quick-question popup.
+- `bin/tmux-ai-prs-popup`: shared tmux popup wrapper for the PR dashboard.
+- `bin/ai-pr-dashboard`: dynamic `gh`-powered dashboard for worktree PRs.
 - `home/`: exact copies of the files from the original machine.
 
 ## Agent Worktrees
@@ -105,3 +110,7 @@ tmux set-option -g @codex_watch_root "$HOME/projects"
 ```
 
 To make that permanent, edit `modules/tmux/tmux.conf`.
+
+The PR dashboard uses `gh` and `jq`. It opens in a shared `ai-prs` tmux session,
+so `C-w P` from any window shows the same live view. It polls GitHub every 30
+seconds by default; override that with `AI_PR_DASHBOARD_INTERVAL`.

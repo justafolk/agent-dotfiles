@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+session_name="${AI_PR_DASHBOARD_SESSION:-ai-prs}"
+repo_path="${1:-}"
+
+if [[ -z "$repo_path" ]]; then
+  repo_path="$(tmux display-message -p '#{pane_current_path}')"
+fi
+
+if ! tmux has-session -t "$session_name" 2>/dev/null; then
+  tmux new-session -d -s "$session_name" -n prs \
+    "$HOME/.local/bin/ai-pr-dashboard '$repo_path'"
+fi
+
+tmux display-popup \
+  -T "Agent PR dashboard" \
+  -w 94% \
+  -h 88% \
+  -E "tmux attach-session -t '$session_name'"
