@@ -14,7 +14,6 @@ if ! tmux has-session -t "$session_name" 2>/dev/null; then
 fi
 
 tmux display-popup \
-  -T "Agent PR dashboard" \
   -w 94% \
   -h 88% \
   -E "tmux attach-session -t '$session_name'"

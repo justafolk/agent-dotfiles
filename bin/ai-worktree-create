@@ -15,7 +15,8 @@ Options:
   --base REF         Base ref for the new branch. Defaults to HEAD.
   --dir PATH         Parent directory for worktrees. Defaults to ../<repo>-worktrees.
   --todo PATH        Todo file path exposed to the agent as AI_TODO_FILE.
-  --command TEXT     Shell command to run in the tmux window, e.g. "opencode ~/todo.md".
+  --command TEXT     Shell command to send into the tmux window.
+  --opencode         Run OpenCode with a prompt built from --todo and --task.
   --tmux            Always create a tmux window.
   --no-tmux         Do not create a tmux window.
   --no-sync         Do not symlink untracked/ignored files.
@@ -43,6 +44,7 @@ shell_quote() {
   printf "'%s'" "${value//\'/\'\\\'\'}"
 }
 
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo="."
 base_ref="HEAD"
 task=""
@@ -50,6 +52,7 @@ name=""
 worktree_parent=""
 todo_file=""
 window_command=""
+run_opencode=0
 tmux_mode="auto"
 sync_local=1
 print_path=0
@@ -91,6 +94,10 @@ while [[ $# -gt 0 ]]; do
       window_command="$2"
       shift 2
       ;;
+    --opencode)
+      run_opencode=1
+      shift
+      ;;
     --tmux)
       tmux_mode="always"
       shift
@@ -118,6 +125,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$task" || -n "$name" ]] || die "--task or --name is required"
+if [[ "$run_opencode" == "1" && -n "$window_command" ]]; then
+  die "--opencode and --command cannot be used together"
+fi
 display_name="${name:-$task}"
 slug="$(slugify "$display_name")"
 
@@ -131,8 +141,17 @@ if [[ -z "$worktree_parent" ]]; then
 fi
 
 timestamp="$(date +%Y%m%d%H%M%S)"
-branch="agent/${slug}-${timestamp}"
-worktree_path="$worktree_parent/$slug-$timestamp"
+suffix=""
+suffix_number=1
+while :; do
+  branch="agent/${slug}-${timestamp}${suffix}"
+  worktree_path="$worktree_parent/$slug-$timestamp${suffix}"
+  if [[ ! -e "$worktree_path" ]] && ! git -C "$source_root" show-ref --verify --quiet "refs/heads/$branch"; then
+    break
+  fi
+  suffix_number="$((suffix_number + 1))"
+  suffix="-$suffix_number"
+done
 
 mkdir -p "$worktree_parent"
 git -C "$source_root" worktree add -b "$branch" "$worktree_path" "$base_ref" >/dev/null
@@ -161,6 +180,12 @@ if [[ "$sync_local" == "1" ]]; then
   )
 fi
 
+if [[ "$run_opencode" == "1" ]]; then
+  command -v opencode >/dev/null 2>&1 || die "opencode is not available on PATH"
+  [[ -n "$todo_file" ]] || die "--opencode requires --todo"
+  window_command="opencode --prompt $(shell_quote "Read $todo_file and work only on this task: ${task:-$name}")"
+fi
+
 should_open_tmux=0
 if [[ "$tmux_mode" == "always" ]]; then
   should_open_tmux=1
@@ -173,14 +198,36 @@ if [[ "$should_open_tmux" == "1" ]]; then
   window_title="wt:${slug}"
   window_title="$(printf "%s" "$window_title" | cut -c 1-32)"
 
-  if [[ -n "$window_command" ]]; then
-    env_prefix="AI_WORKTREE_PATH=$(shell_quote "$worktree_path") AI_WORKTREE_TASK=$(shell_quote "${task:-$name}")"
-    if [[ -n "$todo_file" ]]; then
-      env_prefix="$env_prefix AI_TODO_FILE=$(shell_quote "$todo_file")"
-    fi
-    tmux new-window -n "$window_title" -c "$worktree_path" "$env_prefix $window_command"
+  env_exports="export AI_WORKTREE_PATH=$(shell_quote "$worktree_path") AI_WORKTREE_TASK=$(shell_quote "${task:-$name}")"
+  if [[ -n "$todo_file" ]]; then
+    env_exports="$env_exports AI_TODO_FILE=$(shell_quote "$todo_file")"
+  fi
+
+  pane_id="$(tmux new-window -P -F '#{pane_id}' -n "$window_title" -c "$worktree_path")"
+  target_window="$(tmux display-message -p -t "$pane_id" '#{session_name}:#{window_index}')"
+
+  layout_command=""
+  if [[ -x "$script_dir/tmux-codex-layout" ]]; then
+    layout_command="$script_dir/tmux-codex-layout"
+  elif [[ -x "$HOME/.local/bin/tmux-codex-layout" ]]; then
+    layout_command="$HOME/.local/bin/tmux-codex-layout"
   else
-    tmux new-window -n "$window_title" -c "$worktree_path"
+    layout_command="$(command -v tmux-codex-layout 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$layout_command" ]]; then
+    "$layout_command" "${target_window%%:*}" "$target_window" no-auto-start
+    window_key="$(tmux display-message -p -t "$target_window" '#{window_id}' | tr -c '[:alnum:]_' '_')"
+    main_pane="$(tmux show-option -qv -t "${target_window%%:*}" "@codex_main_pane_${window_key}" 2>/dev/null || true)"
+    if [[ -n "$main_pane" ]]; then
+      pane_id="$main_pane"
+    fi
+  fi
+
+  tmux send-keys -t "$pane_id" "$env_exports" C-m
+
+  if [[ -n "$window_command" ]]; then
+    tmux send-keys -t "$pane_id" "$window_command" C-m
   fi
 fi
 

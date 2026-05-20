@@ -52,6 +52,11 @@ cd codex-dotfiles
 ./install.sh
 ```
 
+The installer is additive for user config. It writes this repo's tmux, Vim, and
+Bash snippets under `~/.config/codex-dotfiles/`, then adds marked `source`
+blocks to `~/.tmux.conf`, `~/.vimrc`, and `~/.bashrc` if they are not already
+present. Existing user config is not replaced.
+
 Then restart your shell and run:
 
 ```bash
@@ -74,6 +79,7 @@ This repo assumes `vim-plug`, `tmux`, `vim`, `git`, and `bash`.
 - `bin/tmux-codex-layout`: tmux workspace layout helper.
 - `bin/tmux-codex-open-edits`: file watcher that opens changed files in Vim tabs.
 - `bin/ai-worktree-create`: per-task worktree creator with tmux window support.
+- `bin/ai-todo-worktrees`: friendly `~/todo.md` launcher for tmux worktree sessions.
 - `bin/tmux-opencode-popup`: floating OpenCode quick-question popup.
 - `bin/tmux-ai-prs-popup`: shared tmux popup wrapper for the PR dashboard.
 - `bin/ai-pr-dashboard`: dynamic `gh`-powered dashboard for worktree PRs.
@@ -81,16 +87,33 @@ This repo assumes `vim-plug`, `tmux`, `vim`, `git`, and `bash`.
 
 ## Agent Worktrees
 
-Write task items in `~/todo.md`, then ask your agent to follow `AGENTS.md`.
-The agent should group related items when it is cheaper to solve them together
-and create one titled tmux window per worktree:
+Write task items in `~/todo.md`:
+
+```markdown
+- [ ] fix auth redirect and add regression test
+- [ ] update dashboard empty state
+```
+
+Then run this from inside tmux at the repo root:
+
+```bash
+ai-todo-worktrees
+```
+
+That reads unchecked `- [ ]` items from `~/todo.md`, creates one Git worktree
+per item, and adds OpenCode windows to the current tmux session. Each window
+uses the standard three-pane layout: the agent on the left, a shell on the
+right, and Vim below it watching files changed by that agent. Use
+`ai-todo-worktrees --dry-run` to preview the detected tasks.
+
+For manual control, create one titled tmux window per worktree with:
 
 ```bash
 ai-worktree-create \
   --repo . \
   --todo "$HOME/todo.md" \
   --task "fix auth redirect and add regression test" \
-  --command "opencode $HOME/todo.md"
+  --opencode
 ```
 
 The script creates `../<repo>-worktrees/<task>-<timestamp>`, starts a new
@@ -98,6 +121,12 @@ The script creates `../<repo>-worktrees/<task>-<timestamp>`, starts a new
 files from the source worktree. This keeps expensive local state such as
 `.env`, dependency folders, caches, and generated assets available without
 copying them into every worktree.
+
+`--opencode` starts OpenCode in the new worktree and passes the todo file plus
+task through `--prompt`. For other tools, use `--command "codex"` or
+`--command "claude"`. Commands are sent into a persistent shell-backed tmux
+window, so the window remains available for inspection even if the agent command
+exits immediately.
 
 ## Notes
 

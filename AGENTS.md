@@ -18,11 +18,15 @@ ai-worktree-create \
   --repo <repo-path> \
   --todo "$HOME/todo.md" \
   --task "<short grouped task description>" \
-  --command "opencode $HOME/todo.md"
+  --opencode
 ```
 
-Use `--command "codex"` for Codex, `--command "claude"` for Claude Code, or `--command "opencode $HOME/todo.md"` for OpenCode. If the user only asks to prepare worktrees, omit `--command`.
+Use `--opencode` for OpenCode. This starts OpenCode in the worktree and passes the todo/task through `--prompt`; do not pass the todo file as `opencode $HOME/todo.md`, because this OpenCode CLI treats the positional argument as a project directory. Use `--command "codex"` for Codex or `--command "claude"` for Claude Code. If the user only asks to prepare worktrees, omit `--command` and `--opencode`.
 
 The script symlinks untracked and ignored local files into each worktree. Do not manually copy dependency folders, environment files, caches, or generated local assets unless the script reports that a specific path could not be linked.
 
+Creating the worktree creates a Git branch and updates `.git/refs`. If sandboxing reports `.git` as read-only, rerun the same `ai-worktree-create` command with the required approval/escalation instead of changing the workflow.
+
 Before opening parallel windows, state the grouping plan briefly. After creation, report each tmux window title, worktree path, and task group.
+
+For a user-facing one-command flow, tell the user to edit `~/todo.md` with unchecked `- [ ]` tasks and run `ai-todo-worktrees` from the repo root inside tmux. That command creates one OpenCode-backed worktree window per unchecked task in the current tmux session. Use the lower-level `ai-worktree-create` workflow above when an agent should group related todo items before creating worktrees.

@@ -2,19 +2,31 @@
 set -euo pipefail
 
 session="${1:-}"
+target_window="${2:-}"
+auto_start_mode="${3:-auto}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
 if [[ -z "$session" ]]; then
   session="$(tmux display-message -p '#S')"
 fi
 
-if [[ "$(tmux show-option -qv -t "$session" @codex_layout_applied 2>/dev/null || true)" == "1" ]]; then
-  exit 0
+if [[ -n "$target_window" ]]; then
+  case "$target_window" in
+    *:*) window="$target_window" ;;
+    *) window="${session}:${target_window}" ;;
+  esac
+else
+  window="${session}:1"
+  if ! tmux list-windows -t "$session" -F '#I' | grep -qx '1'; then
+    window="${session}:0"
+  fi
 fi
 
-tmux set-option -q -t "$session" @codex_layout_applied 1
+window_id="$(tmux display-message -p -t "$window" '#{window_id}')"
+window_key="$(printf "%s" "$window_id" | tr -c '[:alnum:]_' '_')"
 
-window="${session}:1"
-if ! tmux list-windows -t "$session" -F '#I' | grep -qx '1'; then
-  window="${session}:0"
+if [[ "$(tmux show-option -qv -t "$session" "@codex_layout_applied_${window_key}" 2>/dev/null || true)" == "1" ]]; then
+  exit 0
 fi
 
 pane_count="$(tmux list-panes -t "$window" 2>/dev/null | wc -l | tr -d ' ')"
@@ -22,7 +34,11 @@ if [[ "$pane_count" != "1" ]]; then
   exit 0
 fi
 
-tmux rename-window -t "$window" dev 2>/dev/null || true
+tmux set-option -q -t "$session" "@codex_layout_applied_${window_key}" 1
+
+if [[ -z "$target_window" ]]; then
+  tmux rename-window -t "$window" dev 2>/dev/null || true
+fi
 
 tmux split-window -h -p 42 -t "${window}.1" -c "#{pane_current_path}"
 tmux split-window -v -p 50 -t "${window}.2" -c "#{pane_current_path}"
@@ -36,6 +52,9 @@ vim_pane="$(tmux display-message -p -t "${window}.3" '#{pane_id}')"
 tmux select-pane -t "$main_pane" -T codex
 tmux select-pane -t "$shell_pane" -T shell
 tmux select-pane -t "$vim_pane" -T vim
+tmux set-option -q -t "$session" "@codex_main_pane_${window_key}" "$main_pane"
+tmux set-option -q -t "$session" "@codex_shell_pane_${window_key}" "$shell_pane"
+tmux set-option -q -t "$session" "@codex_vim_pane_${window_key}" "$vim_pane"
 tmux set-option -q -t "$session" @codex_main_pane "$main_pane"
 tmux set-option -q -t "$session" @codex_shell_pane "$shell_pane"
 tmux set-option -q -t "$session" @codex_vim_pane "$vim_pane"
@@ -44,12 +63,12 @@ if [[ "$(tmux show-option -gqv @codex_auto_vim)" == "on" ]]; then
   tmux send-keys -t "$vim_pane" 'vim' C-m
 fi
 
-if [[ "$(tmux show-option -gqv @codex_auto_start)" == "on" ]] && command -v codex >/dev/null 2>&1; then
+if [[ "$auto_start_mode" != "no-auto-start" && "$(tmux show-option -gqv @codex_auto_start)" == "on" ]] && command -v codex >/dev/null 2>&1; then
   tmux send-keys -t "$main_pane" 'codex' C-m
 fi
 
 if [[ "$(tmux show-option -gqv @codex_auto_watch)" == "on" ]]; then
-  tmux run-shell -b "$HOME/.local/bin/tmux-codex-open-edits '$session' watch"
+  tmux run-shell -b "$(printf "%q" "$script_dir/tmux-codex-open-edits") '$session:$window_id' watch"
 fi
 
 tmux select-pane -t "$main_pane"

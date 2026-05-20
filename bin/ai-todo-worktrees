@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: ai-todo-worktrees [options]
+
+Read unchecked tasks from a todo file and create one tmux-backed Git worktree
+for each task in the current repository.
+
+Options:
+  --todo PATH        Todo file to read. Defaults to ~/todo.md.
+  --repo PATH        Source repository path. Defaults to the current directory.
+  --agent NAME       Agent to launch: opencode, codex, claude, or none.
+                    Defaults to opencode.
+  --dry-run          Print the tasks that would be launched.
+  -h, --help         Show this help.
+
+Todo format:
+  - [ ] add login tests
+  - [ ] fix dashboard overflow
+USAGE
+}
+
+die() {
+  printf "ai-todo-worktrees: %s\n" "$*" >&2
+  exit 1
+}
+
+trim_task() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf "%s" "$value"
+}
+
+todo_file="$HOME/todo.md"
+repo="."
+agent="opencode"
+dry_run=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --todo)
+      [[ $# -ge 2 ]] || die "--todo requires a value"
+      todo_file="$2"
+      shift 2
+      ;;
+    --repo)
+      [[ $# -ge 2 ]] || die "--repo requires a value"
+      repo="$2"
+      shift 2
+      ;;
+    --agent)
+      [[ $# -ge 2 ]] || die "--agent requires a value"
+      agent="$2"
+      shift 2
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown option: $1"
+      ;;
+  esac
+done
+
+case "$agent" in
+  opencode|codex|claude|none) ;;
+  *) die "--agent must be one of: opencode, codex, claude, none" ;;
+esac
+
+[[ -f "$todo_file" ]] || die "todo file not found: $todo_file"
+git -C "$repo" rev-parse --show-toplevel >/dev/null 2>&1 \
+  || die "$repo is not inside a Git worktree"
+
+if [[ "$dry_run" == "0" ]]; then
+  [[ -n "${TMUX:-}" ]] || die "run this inside tmux so new worktree windows can be added to the current session"
+fi
+
+tasks=()
+while IFS= read -r line; do
+  if [[ "$line" =~ ^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\][[:space:]]+(.*)$ ]]; then
+    task="$(trim_task "${BASH_REMATCH[1]}")"
+    [[ -n "$task" ]] && tasks+=("$task")
+  fi
+done < "$todo_file"
+
+[[ "${#tasks[@]}" -gt 0 ]] || die "no unchecked tasks found in $todo_file"
+
+printf "Found %s unchecked task(s) in %s:\n" "${#tasks[@]}" "$todo_file"
+for i in "${!tasks[@]}"; do
+  printf "  %s. %s\n" "$((i + 1))" "${tasks[$i]}"
+done
+
+if [[ "$dry_run" == "1" ]]; then
+  exit 0
+fi
+
+for task in "${tasks[@]}"; do
+  case "$agent" in
+    opencode)
+      ai-worktree-create --repo "$repo" --todo "$todo_file" --task "$task" --opencode --tmux
+      ;;
+    codex)
+      ai-worktree-create --repo "$repo" --todo "$todo_file" --task "$task" --command "codex" --tmux
+      ;;
+    claude)
+      ai-worktree-create --repo "$repo" --todo "$todo_file" --task "$task" --command "claude" --tmux
+      ;;
+    none)
+      ai-worktree-create --repo "$repo" --todo "$todo_file" --task "$task" --tmux
+      ;;
+  esac
+done

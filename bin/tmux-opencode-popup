@@ -25,7 +25,6 @@ if ! command -v opencode >/dev/null 2>&1; then
 fi
 
 tmux display-popup \
-  -T "OpenCode quick question" \
   -d "$work_dir" \
   -w 88% \
   -h 82% \

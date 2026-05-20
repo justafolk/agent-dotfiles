@@ -1,27 +1,53 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-session="${1:-}"
+target="${1:-}"
 mode="${2:-once}"
-if [[ -z "$session" ]]; then
-  session="$(tmux display-message -p '#S')"
+if [[ -z "$target" ]]; then
+  target="$(tmux display-message -p '#S')"
+fi
+
+session="${target%%:*}"
+window=""
+if [[ "$target" == *:* ]]; then
+  window="$target"
+fi
+window_key=""
+if [[ -n "$window" ]]; then
+  window_key="$(tmux display-message -p -t "$window" '#{window_id}' 2>/dev/null | tr -c '[:alnum:]_' '_' || true)"
 fi
 
 state_dir="${TMPDIR:-/tmp}/tmux-codex-open-edits"
 mkdir -p "$state_dir"
-state_file="$state_dir/${session}.seen"
+state_name="$(printf "%s" "$target" | tr -c '[:alnum:]_.-' '_')"
+state_file="$state_dir/${state_name}.seen"
 touch "$state_file"
+
+tmux_option() {
+  local name="$1"
+  local value=""
+
+  if [[ -n "$window_key" ]]; then
+    value="$(tmux show-option -qv -t "$session" "${name}_${window_key}" 2>/dev/null || true)"
+    if [[ -n "$value" ]]; then
+      printf "%s" "$value"
+      return 0
+    fi
+  fi
+
+  tmux show-option -qv -t "$session" "$name" 2>/dev/null || true
+}
 
 watch_root() {
   local configured main_pane cwd
 
-  configured="$(tmux show-option -qv -t "$session" @codex_watch_root 2>/dev/null || true)"
+  configured="$(tmux_option @codex_watch_root)"
   if [[ -n "$configured" ]]; then
     printf "%s" "${configured/#\~/$HOME}"
     return 0
   fi
 
-  main_pane="$(tmux show-option -qv -t "$session" @codex_main_pane 2>/dev/null || true)"
+  main_pane="$(tmux_option @codex_main_pane)"
   [[ -n "$main_pane" ]] || return 1
   tmux list-panes -a -F '#{pane_id}' | grep -qx "$main_pane" || return 1
 
@@ -39,7 +65,7 @@ open_file_in_vim_pane() {
   local file="$1"
   local vim_pane command escaped
 
-  vim_pane="$(tmux show-option -qv -t "$session" @codex_vim_pane 2>/dev/null || true)"
+  vim_pane="$(tmux_option @codex_vim_pane)"
   [[ -n "$vim_pane" ]] || return 0
   tmux list-panes -a -F '#{pane_id}' | grep -qx "$vim_pane" || return 0
 
@@ -98,6 +124,9 @@ if [[ "$mode" == "watch" ]]; then
   interval="$(tmux show-option -gqv @codex_watch_interval 2>/dev/null || printf "2")"
   scan_once baseline
   while tmux has-session -t "$session" 2>/dev/null; do
+    if [[ -n "$window" ]] && ! tmux display-message -p -t "$window" '#{window_id}' >/dev/null 2>&1; then
+      break
+    fi
     scan_once
     sleep "$interval"
   done
